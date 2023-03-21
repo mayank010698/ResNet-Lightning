@@ -13,7 +13,7 @@ from torch.optim import SGD, Adam
 from torch.utils.data import DataLoader
 from torchmetrics import Accuracy
 from torchvision import transforms
-from torchvision.datasets import ImageFolder
+from torchvision.datasets import ImageFolder, MNIST
 
 
 # Here we define a new class to turn the ResNet model that we want to use as a feature extractor
@@ -62,6 +62,7 @@ class ResNetClassifier(pl.LightningModule):
         )
         # Using a pretrained ResNet backbone
         self.resnet_model = self.resnets[resnet_version](pretrained=transfer)
+        self.resnet_model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
         # Replace old FC layer with Identity so we can train our own
         linear_size = list(self.resnet_model.children())[-1].in_features
         # replace final layer for fine tuning
@@ -90,22 +91,25 @@ class ResNetClassifier(pl.LightningModule):
         acc = self.acc(preds, y)
         return loss, acc
 
-    def _dataloader(self, data_path, shuffle=False):
+    def _dataloader(self, data_path, shuffle=False, train=True):
         # values here are specific to pneumonia dataset and should be updated for custom data
-        transform = transforms.Compose(
-            [
-                transforms.Resize((500, 500)),
-                transforms.ToTensor(),
-                transforms.Normalize((0.48232,), (0.23051,)),
-            ]
-        )
+        # transform = transforms.Compose(
+        #     [
+        #         transforms.Resize((500, 500)),
+        #         transforms.ToTensor(),
+        #         transforms.Normalize((0.48232,), (0.23051,)),
+        #     ]
+        # )
+        transform = transforms.ToTensor()
+        
+        return DataLoader(MNIST(data_path,transform=transform,train=train,download=True),batch_size=self.batch_size,drop_last=True,shuffle=shuffle)
 
-        img_folder = ImageFolder(data_path, transform=transform)
-
-        return DataLoader(img_folder, batch_size=self.batch_size, shuffle=shuffle)
+        # img_folder = ImageFolder(data_path, transform=transform)
+        # return DataLoader(img_folder, batch_size=self.batch_size, shuffle=shuffle)
+        
 
     def train_dataloader(self):
-        return self._dataloader(self.train_path, shuffle=True)
+        return self._dataloader(self.train_path, train=True)
 
     def training_step(self, batch, batch_idx):
         loss, acc = self._step(batch)
@@ -119,7 +123,7 @@ class ResNetClassifier(pl.LightningModule):
         return loss
 
     def val_dataloader(self):
-        return self._dataloader(self.val_path)
+        return self._dataloader(self.val_path,train=False)
 
     def validation_step(self, batch, batch_idx):
         loss, acc = self._step(batch)
@@ -216,6 +220,7 @@ if __name__ == "__main__":
         transfer=args.transfer,
         tune_fc_only=args.tune_fc_only,
     )
+    
 
     save_path = args.save_path if args.save_path is not None else "./models"
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
@@ -227,13 +232,12 @@ if __name__ == "__main__":
         save_last=True,
     )
 
-    stopping_callback = pl.callbacks.EarlyStopping()
+    # stopping_callback = pl.callbacks.EarlyStopping()
 
     # Instantiate lightning trainer and train model
     trainer_args = {
-        "accelerator": "gpu" if args.gpus else None,
-        "devices": [1],
-        "strategy": "dp" if args.gpus > 1 else None,
+"accelerator": "cpu",
+        "strategy": "auto",
         "max_epochs": args.num_epochs,
         "callbacks": [checkpoint_callback],
         "precision": 16 if args.mixed_precision else 32,
